@@ -1,8 +1,6 @@
 import time
 import ccxt
 import threading
-from fastapi import FastAPI
-import uvicorn
 
 # Configurações
 quantidade_brl = 60
@@ -13,15 +11,15 @@ intervalo = 10  # segundos
 # Variáveis de controle
 position = None  # 'long', 'short' ou None
 entry_price = None
-cooldown_until = 0
-cooldown_time = 60
+cooldown_until = 0  # timestamp para cooldown
+cooldown_time = 60  # tempo de espera após erro
 
 # Inicializa a Binance
 binance = ccxt.binance({
     'apiKey': 'MsyHcLLcfEVaYxSYHKz4sRep4cB7dLtkkySi0fn1wgXvde0F788RkWdjrXleZmIY',
     'secret': 'LnzMvpPBSqWTt1gvni0pnISGkFzUVsDWcPcWXzZI6BsEr3FKnzQpNWFWXy27lvhk',
 })
-binance.set_sandbox_mode(False)
+binance.set_sandbox_mode(False)  # True para testes
 
 symbol = 'USDT/BRL'
 
@@ -58,10 +56,9 @@ def monitorar():
                 time.sleep(intervalo)
                 continue
 
-            if position is None:
-                print("Fazendo primeira tentativa de compra/venda...")
-                brl, usdt = verificar_saldos()
+            brl, usdt = verificar_saldos()
 
+            if position is None:
                 if brl >= quantidade_brl:
                     print(f"💰 Iniciando com COMPRA de {quantidade_brl} BRL")
                     try:
@@ -71,7 +68,8 @@ def monitorar():
                     except Exception as e:
                         print(f"❌ Erro na compra: {e}")
                         cooldown_until = time.time() + cooldown_time
-                elif usdt >= 10:
+
+                elif usdt >= round(quantidade_brl / preco_atual, 2):
                     print(f"💰 Iniciando com VENDA de {round(usdt, 2)} USDT")
                     try:
                         entry_price = preco_atual
@@ -81,42 +79,42 @@ def monitorar():
                     except Exception as e:
                         print(f"❌ Erro na venda: {e}")
                         cooldown_until = time.time() + cooldown_time
-                else:
-                    print("⚠️ Saldo insuficiente para iniciar.")
+
             else:
                 diferenca = preco_atual - entry_price
                 variacao = diferenca / entry_price
 
                 if position == 'long':
                     if variacao <= -stop_loss or variacao >= take_profit:
-                        print(f"📉 Fechando posição LONG com lucro/prejuízo de {round(variacao*100, 2)}%")
-                        usdt = verificar_saldos()[1]
-                        vender_usdt(round(usdt, 2))
-                        position = None
-                        entry_price = None
+                        print(f"📉 Fechando posição LONG com variação de {round(variacao*100, 2)}%")
+                        try:
+                            usdt = verificar_saldos()[1]
+                            vender_usdt(round(usdt, 2))
+                            position = None
+                            entry_price = None
+                            print("💼 Posição LONG encerrada.")
+                        except Exception as e:
+                            print(f"❌ Erro ao vender: {e}")
+                            cooldown_until = time.time() + cooldown_time
+
                 elif position == 'short':
                     if variacao >= stop_loss or variacao <= -take_profit:
-                        print(f"📈 Fechando posição SHORT com lucro/prejuízo de {round(variacao*100, 2)}%")
-                        brl = verificar_saldos()[0]
-                        comprar_usdt(brl)
-                        position = None
-                        entry_price = None
+                        print(f"📈 Fechando posição SHORT com variação de {round(variacao*100, 2)}%")
+                        try:
+                            brl = verificar_saldos()[0]
+                            comprar_usdt(brl)
+                            position = None
+                            entry_price = None
+                            print("💼 Posição SHORT encerrada.")
+                        except Exception as e:
+                            print(f"❌ Erro ao comprar: {e}")
+                            cooldown_until = time.time() + cooldown_time
 
         except Exception as e:
-            print(f"Erro inesperado: {e}")
+            print(f"🔥 Erro inesperado: {e}")
             cooldown_until = time.time() + cooldown_time
 
         time.sleep(intervalo)
 
-# 🧠 BOT EM THREAD
-threading.Thread(target=monitorar, daemon=True).start()
-
-# 🌀 FASTAPI WEB PARA KOYEB
-app = FastAPI()
-
-@app.get("/")
-def status():
-    return {"status": "bot ativo", "posição": position, "preço_entrada": entry_price}
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# Iniciar o monitoramento em uma thread
+threading.Thread(target=monitorar).start()
