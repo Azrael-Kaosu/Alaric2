@@ -1,2 +1,3 @@
-worker: python bot_binance.py
+python main.py
+
 
