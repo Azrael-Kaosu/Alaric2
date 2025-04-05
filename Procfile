@@ -1,3 +1,6 @@
-python main.py
+ccxt
+fastapi
+uvicorn
+
 
 
