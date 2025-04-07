@@ -1,3 +1,4 @@
+import os
 import ccxt
 import time
 import threading
