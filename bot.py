@@ -140,9 +140,15 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Bot esta vivo!")
 
-def iniciar_health_server():
-    servidor = HTTPServer(('0.0.0.0', 8000), HealthHandler)
-    servidor.serve_forever()
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+
+app = FastAPI()
+
+@app.get("/health")
+async def health():
+    return JSONResponse(content={"status": "ok"})
+
 
 # ==========================
 # 🚀 Inicialização
@@ -151,21 +157,9 @@ def iniciar_health_server():
 def iniciar_bot():
     print("[🔥] Bot Versão 3 com proteção contra ordens duplicadas iniciado.")
 
-    # Iniciar servidor de health check
-    threading.Thread(target=iniciar_health_server, daemon=True).start()
-
-    # Iniciar bot para cada par
+      # Iniciar bot para cada par
     for par in pares:
         threading.Thread(target=executar_bot, args=(par,), daemon=True).start()
 
-    while True:
-        time.sleep(60)
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
 
-app = FastAPI()
-
-@app.get("/health")
-async def health_check():
-    return JSONResponse(content={"status": "ok"})
 
