@@ -1,4 +1,4 @@
-web: python bot_v3.py
+web: python web.py
 
 
 
