@@ -1,112 +1,161 @@
 import ccxt
 import time
-import pandas as pd
+import threading
+import statistics
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime
-import pytz
 
-# Configuração da Binance
+# ==========================
+# 🔐 Configurações da Binance
+# ==========================
+api_key = os.getenv("BINANCE_API_KEY")
+api_secret = os.getenv("BINANCE_API_SECRET")
+
 exchange = ccxt.binance({
-    'apiKey': 'SUA_API_KEY',
-    'secret': 'SUA_SECRET_KEY',
-    'enableRateLimit': True,
-    'options': {'defaultType': 'spot'}
+    'apiKey': api_key,
+    'secret': api_secret,
+    'enableRateLimit': True
 })
 
-# Parâmetros
-symbols = ['DOGE/USDT', 'SHIB/USDT']
-order_size = 6  # USD por ordem
-take_profit_pct = 0.01
-stop_loss_pct = 0.005
-interval = '1m'
-limit = 100
+# ==========================
+# ⚙️ Configurações gerais
+# ==========================
+pares = {
+    "DOGE/USDT": {"quantidade": 6},
+    "SHIB/USDT": {"quantidade": 6}
+}
 
-# Armazena posições abertas
-positions = {}
+take_profit_percent = 1.01  # 1%
+stop_loss_percent = 0.995   # -0.5%
+rsi_buy_threshold = 15
+rsi_sell_threshold = 80
+rsi_protege_venda = True
 
-def get_data(symbol):
-    candles = exchange.fetch_ohlcv(symbol, interval, limit=limit)
-    df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    return df
+intervalo = '1m'
+limite_candles = 100
 
-def calculate_indicators(df):
-    df['ema12'] = df['close'].ewm(span=12).mean()
-    df['ema26'] = df['close'].ewm(span=26).mean()
-    df['macd'] = df['ema12'] - df['ema26']
-    df['signal'] = df['macd'].ewm(span=9).mean()
-    df['rsi'] = compute_rsi(df['close'], 14)
-    df['ma20'] = df['close'].rolling(window=20).mean()
-    return df
+# Armazenar ordens ativas
+ordens_ativas = {}
 
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    rs = avg_gain / avg_loss
+# ==========================
+# 🔍 Funções Técnicas
+# ==========================
+
+def obter_dados_mercado(par):
+    ohlcv = exchange.fetch_ohlcv(par, timeframe=intervalo, limit=limite_candles)
+    return [x[4] for x in ohlcv]
+
+def calcular_rsi(precos, periodo=14):
+    ganhos = []
+    perdas = []
+
+    for i in range(1, periodo + 1):
+        delta = precos[-i] - precos[-i - 1]
+        if delta > 0:
+            ganhos.append(delta)
+        else:
+            perdas.append(abs(delta))
+
+    if not ganhos:
+        return 0
+    if not perdas:
+        return 100
+
+    media_ganhos = sum(ganhos) / periodo
+    media_perdas = sum(perdas) / periodo
+    rs = media_ganhos / media_perdas
     return 100 - (100 / (1 + rs))
 
-def log(msg):
-    agora = datetime.now(pytz.timezone('America/Sao_Paulo')).strftime("%H:%M:%S")
-    print(f"[{agora}] {msg}")
+def calcular_macd(precos):
+    def ema(prices, period):
+        return statistics.mean(prices[-period:])
 
-def trade():
-    for symbol in symbols:
+    ema12 = ema(precos, 12)
+    ema26 = ema(precos, 26)
+    macd = ema12 - ema26
+    signal = ema(precos[-9:], 9)
+    return macd, signal
+
+# ==========================
+# 🤖 Execução de Ordens
+# ==========================
+
+def executar_bot(par):
+    global ordens_ativas
+
+    while True:
         try:
-            df = get_data(symbol)
-            df = calculate_indicators(df)
+            precos = obter_dados_mercado(par)
+            media_20 = statistics.mean(precos[-20:])
+            preco_atual = precos[-1]
+            rsi = calcular_rsi(precos)
+            macd, signal = calcular_macd(precos)
+            simbolo_formatado = par.replace("/", "")
 
-            last = df.iloc[-1]
-            previous = df.iloc[-2]
-            price = last['close']
-            rsi = last['rsi']
-            macd = last['macd']
-            signal = last['signal']
-            ma20 = last['ma20']
+            posicao_aberta = ordens_ativas.get(par, None)
 
-            # Checar se já temos uma posição aberta
-            position = positions.get(symbol)
+            if not posicao_aberta:
+                if macd > signal and preco_atual > media_20:
+                    if rsi < rsi_buy_threshold:
+                        print(f"[{par}] RSI < {rsi_buy_threshold}. Compra permitida, mas com cautela.")
 
-            # CONDIÇÃO DE COMPRA
-            if not position:
-                if macd > signal and previous['macd'] <= previous['signal'] and price > ma20:
-                    if rsi < 15:
-                        log(f"🎯 RSI favorável para entrada (RSI = {rsi:.2f})")
-                    amount = order_size / price
-                    # exchange.create_market_buy_order(symbol, amount)
-                    positions[symbol] = {
-                        'entry_price': price,
-                        'amount': amount
+                    quantidade = pares[par]["quantidade"] / preco_atual
+                    order = exchange.create_market_buy_order(par, quantidade)
+                    ordens_ativas[par] = {
+                        "preco_compra": preco_atual,
+                        "quantidade": quantidade,
+                        "hora": datetime.now()
                     }
-                    log(f"[{symbol}] Comprado a {price:.4f} com {amount:.4f} unidades")
-
-            # CONDIÇÃO DE VENDA
-            if position:
-                entry = position['entry_price']
-                amount = position['amount']
-                change = (price - entry) / entry
-
-                if rsi < 15:
-                    log(f"🔒 RSI abaixo de 15 — evitando venda (RSI = {rsi:.2f})")
-                elif change >= take_profit_pct:
-                    # exchange.create_market_sell_order(symbol, amount)
-                    log(f"[{symbol}] Take profit: Vendido a {price:.4f} com lucro de {change*100:.2f}%")
-                    del positions[symbol]
-                elif change <= -stop_loss_pct:
-                    # exchange.create_market_sell_order(symbol, amount)
-                    log(f"[{symbol}] Stop loss: Vendido a {price:.4f} com prejuízo de {change*100:.2f}%")
-                    del positions[symbol]
-                elif rsi > 80:
-                    # exchange.create_market_sell_order(symbol, amount)
-                    log(f"[{symbol}] RSI > 80: Vendido a {price:.4f} mesmo sem atingir TP/SL")
-                    del positions[symbol]
+                    print(f"[{par}] ✅ COMPRA realizada a {preco_atual:.4f}")
+            else:
+                preco_compra = ordens_ativas[par]["preco_compra"]
+                if preco_atual >= preco_compra * take_profit_percent:
+                    if rsi < rsi_buy_threshold and rsi_protege_venda:
+                        print(f"[{par}] RSI < {rsi_buy_threshold}, venda ignorada mesmo com lucro.")
+                    else:
+                        exchange.create_market_sell_order(par, ordens_ativas[par]["quantidade"])
+                        print(f"[{par}] ✅ VENDA (lucro) realizada a {preco_atual:.4f}")
+                        ordens_ativas.pop(par)
+                elif preco_atual <= preco_compra * stop_loss_percent:
+                    if rsi < rsi_buy_threshold and rsi_protege_venda:
+                        print(f"[{par}] RSI < {rsi_buy_threshold}, venda ignorada mesmo com prejuízo.")
+                    else:
+                        exchange.create_market_sell_order(par, ordens_ativas[par]["quantidade"])
+                        print(f"[{par}] ❌ VENDA (stop-loss) realizada a {preco_atual:.4f}")
+                        ordens_ativas.pop(par)
 
         except Exception as e:
-            log(f"Erro em {symbol}: {e}")
+            print(f"[{par}] Erro: {e}")
 
-# Loop infinito
-log("🤖 Bot Versão 3 com proteção contra ordens duplicadas iniciado.")
-while True:
-    trade()
-    time.sleep(60)
+        time.sleep(10)
+
+# ==========================
+# 🌐 Servidor de Health Check
+# ==========================
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot esta vivo!")
+
+def iniciar_health_server():
+    servidor = HTTPServer(('0.0.0.0', 8000), HealthHandler)
+    servidor.serve_forever()
+
+# ==========================
+# 🚀 Inicialização
+# ==========================
+
+if __name__ == "__main__":
+    print("[🔥] Bot Versão 3 com proteção contra ordens duplicadas iniciado.")
+
+    # Iniciar servidor de health check
+    threading.Thread(target=iniciar_health_server, daemon=True).start()
+
+    # Iniciar bot para cada par
+    for par in pares:
+        threading.Thread(target=executar_bot, args=(par,), daemon=True).start()
+
+    while True:
+        time.sleep(60)
