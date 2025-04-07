@@ -1,4 +1,4 @@
 ccxt
-fastapi
-uvicorn
-
+pandas
+ta
+python-dotenv
