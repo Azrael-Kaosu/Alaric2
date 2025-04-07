@@ -148,7 +148,7 @@ def iniciar_health_server():
 # 🚀 Inicialização
 # ==========================
 
-if __name__ == "__main__":
+def iniciar_bot():
     print("[🔥] Bot Versão 3 com proteção contra ordens duplicadas iniciado.")
 
     # Iniciar servidor de health check
@@ -160,3 +160,4 @@ if __name__ == "__main__":
 
     while True:
         time.sleep(60)
+
