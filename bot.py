@@ -156,10 +156,16 @@ async def health():
 
 def iniciar_bot():
     print("[🔥] Bot Versão 3 com proteção contra ordens duplicadas iniciado.")
-
-      # Iniciar bot para cada par
+    
+    threads = []
     for par in pares:
-        threading.Thread(target=executar_bot, args=(par,), daemon=True).start()
+        t = threading.Thread(target=executar_bot, args=(par,))
+        t.start()
+        threads.append(t)
+
+    for t in threads:
+        t.join()  # <-- isso evita que a função 'iniciar_bot' termine cedo demais
+)
 
 
 
