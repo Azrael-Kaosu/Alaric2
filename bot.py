@@ -141,7 +141,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot esta vivo!")
 
 def iniciar_health_server():
-    servidor = HTTPServer(('0.0.0.0', 8000), HealthHandler)
+    servidor = HTTPServer(('0.0.0.0', 8193), HealthHandler)
     servidor.serve_forever()
 
 # ==========================
