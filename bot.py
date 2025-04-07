@@ -141,7 +141,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot esta vivo!")
 
 def iniciar_health_server():
-    servidor = HTTPServer(('0.0.0.0', 8193), HealthHandler)
+    servidor = HTTPServer(('0.0.0.0', 8000), HealthHandler)
     servidor.serve_forever()
 
 # ==========================
@@ -160,4 +160,12 @@ def iniciar_bot():
 
     while True:
         time.sleep(60)
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+
+app = FastAPI()
+
+@app.get("/health")
+async def health_check():
+    return JSONResponse(content={"status": "ok"})
 
