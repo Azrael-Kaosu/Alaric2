@@ -1,67 +1,112 @@
-import time
 import ccxt
-from threading import Lock
-from config import API_KEY, API_SECRET, VALOR_BR, STOP_LOSS, TAKE_PROFIT
+import time
+import pandas as pd
+from datetime import datetime
+import pytz
 
+# Configuração da Binance
 exchange = ccxt.binance({
-    'apiKey': API_KEY,
-    'secret': API_SECRET,
+    'apiKey': 'SUA_API_KEY',
+    'secret': 'SUA_SECRET_KEY',
     'enableRateLimit': True,
+    'options': {'defaultType': 'spot'}
 })
 
-symbol = 'USDT/BRL'
-operation_lock = Lock()
-cooldown = 60  # segundos
-ultimo_preco = None
+# Parâmetros
+symbols = ['DOGE/USDT', 'SHIB/USDT']
+order_size = 6  # USD por ordem
+take_profit_pct = 0.01
+stop_loss_pct = 0.005
+interval = '1m'
+limit = 100
 
-def pegar_preco():
-    ticker = exchange.fetch_ticker(symbol)
-    return round(ticker['last'], 3)
+# Armazena posições abertas
+positions = {}
 
-def comprar(valor_brl):
-    try:
-        preco = pegar_preco()
-        quantidade = round(valor_brl / preco, 2)
-        order = exchange.create_market_buy_order(symbol, quantidade)
-        print(f"✔️ Compra executada a {preco} BRL")
-    except Exception as e:
-        print(f"❌ Erro na compra: {e}")
+def get_data(symbol):
+    candles = exchange.fetch_ohlcv(symbol, interval, limit=limit)
+    df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    return df
 
-def vender(valor_usdt):
-    try:
-        preco = pegar_preco()
-        order = exchange.create_market_sell_order(symbol, valor_usdt)
-        print(f"✔️ Venda executada a {preco} BRL")
-    except Exception as e:
-        print(f"❌ Erro na venda: {e}")
+def calculate_indicators(df):
+    df['ema12'] = df['close'].ewm(span=12).mean()
+    df['ema26'] = df['close'].ewm(span=26).mean()
+    df['macd'] = df['ema12'] - df['ema26']
+    df['signal'] = df['macd'].ewm(span=9).mean()
+    df['rsi'] = compute_rsi(df['close'], 14)
+    df['ma20'] = df['close'].rolling(window=20).mean()
+    return df
 
-def executar_operacao():
-    if operation_lock.locked():
-        print("⚠️ Operação em andamento. Ignorando.")
-        return
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window=period).mean()
+    avg_loss = loss.rolling(window=period).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-    with operation_lock:
-        preco = pegar_preco()
-        global ultimo_preco
-        if preco != ultimo_preco:
-            print(f"Preço atual: {preco} BRL")
-            ultimo_preco = preco
+def log(msg):
+    agora = datetime.now(pytz.timezone('America/Sao_Paulo')).strftime("%H:%M:%S")
+    print(f"[{agora}] {msg}")
 
-        # Exemplo: simulação de lógica
-        if preco < 5.87:
-            print(f"💰 Iniciando COMPRA de {VALOR_BR} BRL")
-            comprar(VALOR_BR)
-        elif preco > 5.88:
-            saldo = exchange.fetch_balance()
-            usdt_disp = saldo['total']['USDT']
-            if usdt_disp > 5:
-                print(f"💰 Iniciando VENDA de {round(usdt_disp, 2)} USDT")
-                vender(round(usdt_disp, 2))
-
-def iniciar_bot():
-    while True:
+def trade():
+    for symbol in symbols:
         try:
-            executar_operacao()
+            df = get_data(symbol)
+            df = calculate_indicators(df)
+
+            last = df.iloc[-1]
+            previous = df.iloc[-2]
+            price = last['close']
+            rsi = last['rsi']
+            macd = last['macd']
+            signal = last['signal']
+            ma20 = last['ma20']
+
+            # Checar se já temos uma posição aberta
+            position = positions.get(symbol)
+
+            # CONDIÇÃO DE COMPRA
+            if not position:
+                if macd > signal and previous['macd'] <= previous['signal'] and price > ma20:
+                    if rsi < 15:
+                        log(f"🎯 RSI favorável para entrada (RSI = {rsi:.2f})")
+                    amount = order_size / price
+                    # exchange.create_market_buy_order(symbol, amount)
+                    positions[symbol] = {
+                        'entry_price': price,
+                        'amount': amount
+                    }
+                    log(f"[{symbol}] Comprado a {price:.4f} com {amount:.4f} unidades")
+
+            # CONDIÇÃO DE VENDA
+            if position:
+                entry = position['entry_price']
+                amount = position['amount']
+                change = (price - entry) / entry
+
+                if rsi < 15:
+                    log(f"🔒 RSI abaixo de 15 — evitando venda (RSI = {rsi:.2f})")
+                elif change >= take_profit_pct:
+                    # exchange.create_market_sell_order(symbol, amount)
+                    log(f"[{symbol}] Take profit: Vendido a {price:.4f} com lucro de {change*100:.2f}%")
+                    del positions[symbol]
+                elif change <= -stop_loss_pct:
+                    # exchange.create_market_sell_order(symbol, amount)
+                    log(f"[{symbol}] Stop loss: Vendido a {price:.4f} com prejuízo de {change*100:.2f}%")
+                    del positions[symbol]
+                elif rsi > 80:
+                    # exchange.create_market_sell_order(symbol, amount)
+                    log(f"[{symbol}] RSI > 80: Vendido a {price:.4f} mesmo sem atingir TP/SL")
+                    del positions[symbol]
+
         except Exception as e:
-            print(f"❌ Erro geral: {e}")
-        time.sleep(cooldown)
+            log(f"Erro em {symbol}: {e}")
+
+# Loop infinito
+log("🤖 Bot Versão 3 com proteção contra ordens duplicadas iniciado.")
+while True:
+    trade()
+    time.sleep(60)
