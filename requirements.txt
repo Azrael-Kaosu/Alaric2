@@ -1,2 +1,4 @@
 ccxt
 numpy
+fastapi
+uvicorn
