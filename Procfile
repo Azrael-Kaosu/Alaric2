@@ -1,1 +1,1 @@
-web: python nome_do_arquivo.py
+web: python bot_turbo_v4.py
