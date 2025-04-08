@@ -165,7 +165,7 @@ def iniciar_bot():
 
     for t in threads:
         t.join()  # <-- isso evita que a função 'iniciar_bot' termine cedo demais
-)
+
 
 
 
