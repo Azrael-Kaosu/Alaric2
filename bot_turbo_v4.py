@@ -24,16 +24,24 @@ exchange = ccxt.binance({
 })
 exchange.set_sandbox_mode(False)
 
-# Dicionário com trades abertos e controle do topo
+# Dicionário com trades abertos
 abertas = {}  # {symbol: {'compra': preco, 'tempo': timestamp, 'topo': preco}}
+
+def log(msg, tipo='INFO'):
+    timestamp = datetime.datetime.now().strftime('%H:%M:%S')
+    prefix = {
+        'INFO': '[ℹ️]',
+        'COMPRA': '[🟢]',
+        'VENDA': '[🔴]',
+        'ERRO': '[⚠️]',
+        'WARNING': '[🟡]'
+    }.get(tipo, '[ℹ️]')
+    print(f"[{timestamp}] {prefix} {msg}")
 
 def calcular_indicadores(precos):
     closes = np.array(precos)
 
-    # Média móvel
     media = np.mean(closes[-20:])
-
-    # RSI
     diffs = np.diff(closes)
     ganhos = np.maximum(diffs, 0)
     perdas = np.maximum(-diffs, 0)
@@ -41,8 +49,6 @@ def calcular_indicadores(precos):
     avg_loss = np.mean(perdas[-14:])
     rs = avg_gain / avg_loss if avg_loss != 0 else 1e10
     rsi = 100 - (100 / (1 + rs))
-
-    # MACD
     ema12 = np.mean(closes[-12:])
     ema26 = np.mean(closes[-26:])
     macd = ema12 - ema26
@@ -56,12 +62,12 @@ def pegar_precos(symbol, limit=50):
     return closes
 
 def comprar(symbol, preco):
-    print(f"[🟢] Comprando {symbol} a {preco:.6f}")
+    log(f"Comprando {symbol} a {preco:.6f}", 'COMPRA')
     exchange.create_market_buy_order(symbol, capital_por_ordem / preco)
     abertas[symbol] = {'compra': preco, 'tempo': time.time(), 'topo': preco}
 
 def vender(symbol, preco, motivo):
-    print(f"[🔴] Vendendo {symbol} a {preco:.6f} | Motivo: {motivo}")
+    log(f"Vendendo {symbol} a {preco:.6f} | Motivo: {motivo}", 'VENDA')
     amount = capital_por_ordem / abertas[symbol]['compra']
     exchange.create_market_sell_order(symbol, amount)
     del abertas[symbol]
@@ -69,25 +75,31 @@ def vender(symbol, preco, motivo):
 def analisar():
     for symbol in symbol_list:
         try:
+            log(f"Analisando {symbol}...", 'INFO')
             precos = pegar_precos(symbol)
             atual = precos[-1]
             media, rsi, macd, signal = calcular_indicadores(precos)
 
             explosao = (precos[-1] - precos[-4]) / precos[-4] > explosao_threshold
+            log(f"Preço atual: {atual:.6f} | RSI: {rsi:.2f} | MACD: {macd:.6f} | Signal: {signal:.6f}", 'INFO')
 
             if symbol not in abertas:
                 if macd > signal and atual > media and rsi < rsi_topo:
+                    log(f"📈 Sinal de compra detectado para {symbol}", 'INFO')
                     comprar(symbol, atual)
+                else:
+                    log(f"⚪ Nenhum sinal forte de compra para {symbol}", 'INFO')
             else:
                 preco_compra = abertas[symbol]['compra']
                 topo = abertas[symbol]['topo']
                 lucro = (atual - preco_compra) / preco_compra
 
-                # Atualiza topo se preço subir
                 if atual > topo:
                     abertas[symbol]['topo'] = atual
+                    log(f"📈 Novo topo atingido para {symbol}: {atual:.6f}", 'INFO')
 
                 trailing_stop = abertas[symbol]['topo'] * (1 - trailing_delta)
+                log(f"Lucro atual: {lucro*100:.2f}% | Trailing Stop: {trailing_stop:.6f}", 'INFO')
 
                 if rsi > rsi_topo and not explosao:
                     vender(symbol, atual, 'RSI > topo')
@@ -97,11 +109,8 @@ def analisar():
                     vender(symbol, atual, 'Take Profit')
                 elif lucro <= -stop_loss and rsi > rsi_fundo:
                     vender(symbol, atual, 'Stop Loss')
+                else:
+                    log(f"🔄 Mantendo posição aberta para {symbol}", 'INFO')
 
         except Exception as e:
-            print(f"[⚠️] Erro ao analisar {symbol}: {e}")
-
-print("🚀 Iniciando Bot V4 Turbo com Trailing Stop 0.25%...\n")
-while True:
-    analisar()
-    time.sleep(intervalo)
+            log(f"Erro ao analisar {symbol}: {e}", 'ER
