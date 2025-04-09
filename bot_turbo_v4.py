@@ -15,15 +15,17 @@ stop_loss = 0.005  # 0.5%
 rsi_topo = 80
 rsi_fundo = 15
 explosao_threshold = 0.015  # 1.5% de variação repentina
+trailing_delta = 0.0025  # 0.25%
 
 exchange = ccxt.binance({
     'apiKey': API_KEY,
     'secret': API_SECRET,
     'enableRateLimit': True,
 })
-exchange.set_sandbox_mode(False)  # True para teste
+exchange.set_sandbox_mode(False)
 
-abertas = {}  # {symbol: {'compra': preço, 'tempo': timestamp}}
+# Dicionário com trades abertos e controle do topo
+abertas = {}  # {symbol: {'compra': preco, 'tempo': timestamp, 'topo': preco}}
 
 def calcular_indicadores(precos):
     closes = np.array(precos)
@@ -56,7 +58,7 @@ def pegar_precos(symbol, limit=50):
 def comprar(symbol, preco):
     print(f"[🟢] Comprando {symbol} a {preco:.6f}")
     exchange.create_market_buy_order(symbol, capital_por_ordem / preco)
-    abertas[symbol] = {'compra': preco, 'tempo': time.time()}
+    abertas[symbol] = {'compra': preco, 'tempo': time.time(), 'topo': preco}
 
 def vender(symbol, preco, motivo):
     print(f"[🔴] Vendendo {symbol} a {preco:.6f} | Motivo: {motivo}")
@@ -71,28 +73,35 @@ def analisar():
             atual = precos[-1]
             media, rsi, macd, signal = calcular_indicadores(precos)
 
-            # Detecta explosão de alta (variação muito rápida)
             explosao = (precos[-1] - precos[-4]) / precos[-4] > explosao_threshold
 
             if symbol not in abertas:
-                # Entrada: MACD cruzando pra cima, preço acima da média
-                if macd > signal and atual > media:
-                    if rsi < rsi_topo:  # Evita topo
-                        comprar(symbol, atual)
+                if macd > signal and atual > media and rsi < rsi_topo:
+                    comprar(symbol, atual)
             else:
                 preco_compra = abertas[symbol]['compra']
+                topo = abertas[symbol]['topo']
                 lucro = (atual - preco_compra) / preco_compra
+
+                # Atualiza topo se preço subir
+                if atual > topo:
+                    abertas[symbol]['topo'] = atual
+
+                trailing_stop = abertas[symbol]['topo'] * (1 - trailing_delta)
 
                 if rsi > rsi_topo and not explosao:
                     vender(symbol, atual, 'RSI > topo')
+                elif atual <= trailing_stop:
+                    vender(symbol, atual, 'Trailing Stop')
                 elif lucro >= take_profit and not explosao:
                     vender(symbol, atual, 'Take Profit')
                 elif lucro <= -stop_loss and rsi > rsi_fundo:
                     vender(symbol, atual, 'Stop Loss')
+
         except Exception as e:
             print(f"[⚠️] Erro ao analisar {symbol}: {e}")
 
-print("🚀 Iniciando Bot Versão 4 Turbo com análise avançada...\n")
+print("🚀 Iniciando Bot V4 Turbo com Trailing Stop 0.25%...\n")
 while True:
     analisar()
     time.sleep(intervalo)
