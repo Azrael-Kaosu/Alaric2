@@ -74,7 +74,7 @@ def vender(symbol, preco, motivo):
 def analisar():
     print("📊 Iniciando análise de mercado...")
     for symbol in symbol_list:
-        print(f"🔍 Analisando {symbol}...")
+        print(f"\n🔍 Analisando {symbol}...")
         try:
             precos = pegar_precos(symbol)
             if not precos:
@@ -83,28 +83,38 @@ def analisar():
 
             atual = precos[-1]
             media, rsi, macd, signal = calcular_indicadores(precos)
-
-            print(f"📈 {symbol} | Preço atual: {atual:.6f} | Média: {media:.6f} | RSI: {rsi:.2f} | MACD: {macd:.6f} | Sinal: {signal:.6f}")
-
             explosao = (precos[-1] - precos[-4]) / precos[-4] > explosao_threshold
-            print(f"💥 Explosão detectada: {explosao}")
+
+            print(f"📈 Preço: {atual:.6f} | Média: {media:.6f} | RSI: {rsi:.2f} | MACD: {macd:.6f} | Sinal: {signal:.6f}")
+            print(f"💥 Explosão: {'SIM' if explosao else 'NÃO'}")
 
             if symbol not in abertas:
-                if macd > signal and atual > media and rsi < rsi_topo:
-                    print(f"🛒 Condição de compra detectada para {symbol}")
+                print("📥 Sem posição aberta.")
+                condicoes = {
+                    'MACD > Sinal': macd > signal,
+                    'Preço > Média': atual > media,
+                    'RSI < Topo': rsi < rsi_topo
+                }
+
+                for cond, status in condicoes.items():
+                    print(f"🔎 {cond}: {'✅' if status else '❌'}")
+
+                if all(condicoes.values()):
+                    print(f"🛒 Comprando {symbol}!")
                     comprar(symbol, atual)
+                else:
+                    print("⛔ Condições de compra não atendidas.")
             else:
                 preco_compra = abertas[symbol]['compra']
                 topo = abertas[symbol]['topo']
                 lucro = (atual - preco_compra) / preco_compra
 
-                # Atualiza topo se o preço subir
                 if atual > topo:
                     abertas[symbol]['topo'] = atual
-                    print(f"⬆️ Novo topo registrado: {atual:.6f}")
+                    print(f"⬆️ Novo topo: {atual:.6f}")
 
                 trailing_stop = abertas[symbol]['topo'] * (1 - trailing_delta)
-                print(f"📉 Trailing Stop para {symbol}: {trailing_stop:.6f} | Lucro atual: {lucro*100:.2f}%")
+                print(f"💰 Lucro atual: {lucro*100:.2f}% | Trailing Stop: {trailing_stop:.6f}")
 
                 if rsi > rsi_topo and not explosao:
                     vender(symbol, atual, 'RSI > topo')
@@ -114,19 +124,7 @@ def analisar():
                     vender(symbol, atual, 'Take Profit')
                 elif lucro <= -stop_loss and rsi > rsi_fundo:
                     vender(symbol, atual, 'Stop Loss')
-
+                else:
+                    print("🔒 Nenhuma condição de venda atendida.")
         except Exception as e:
             print(f"[⚠️] Erro ao analisar {symbol}: {e}")
-
-def loop_bot():
-    print("🚀 Iniciando Alaric V4.1 com Debug + Trailing Stop...\n")
-    while True:
-        print("🔁 Loop ativo")
-        try:
-            analisar()
-            print("✅ Análise concluída\n")
-        except Exception as e:
-            print(f"❌ Erro no loop_bot: {e}")
-        time.sleep(intervalo)
-
-loop_bot()
