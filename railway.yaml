@@ -1,0 +1,3 @@
+services:
+  - name: alaric-bot
+    startCommand: python bot.py
