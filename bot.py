@@ -30,6 +30,10 @@ exchange = ccxt.binance({
     'enableRateLimit': True,
 })
 exchange.set_sandbox_mode(False)
+log("✅ Conectado à Binance")
+
+})
+exchange.set_sandbox_mode(False)
 
 abertas = {}
 prejuizos = 0
