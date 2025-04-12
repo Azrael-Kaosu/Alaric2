@@ -1,166 +1,191 @@
 import ccxt
 import time
-import itertools
+import datetime
+import numpy as np
 
-# Configuração da API
-api_key = 'D0DiV60UucDChy9heZaDjo65Gli9s1Q4xyfEbUlAiWt718iYuqMVotlGd0GsG8Zz'
-api_secret = 'PtTCQXFQ9VQkJaTdIfPAA53xBV4LYdq3SaS0VzATIAT5mD6geQxk7sGjxBJYtbN3'
+# === CONFIGURAÇÕES ===
+API_KEY = 'D0DiV60UucDChy9heZaDjo65Gli9s1Q4xyfEbUlAiWt718iYuqMVotlGd0GsG8Zz'
+API_SECRET = 'PtTCQXFQ9VQkJaTdIfPAA53xBV4LYdq3SaS0VzATIAT5mD6geQxk7sGjxBJYtbN3'
+symbol_list = ['DOGE/USDT', 'SHIB/USDT']
+capital_por_ordem = 5.5
+intervalo = 20
+take_profit = 0.01
+stop_loss = 0.005
+trailing_delta = 0.0025
+rsi_gatilho = 10
+max_prejuizos = 3
+pausa_em_minutos = 60
 
-binance = ccxt.binance({
-    'apiKey': api_key,
-    'secret': api_secret,
+usar_adx = True
+usar_volume_candle = True
+usar_divergencia_rsi = True
+usar_backtest_rapido = True
+
+# === CONEXÃO ===
+exchange = ccxt.binance({
+    'apiKey': API_KEY,
+    'secret': API_SECRET,
     'enableRateLimit': True,
-    'options': {
-        'defaultType': 'spot',
-    }
 })
+exchange.set_sandbox_mode(False)
 
-# Parâmetros de arbitragem
-taxa = 0.001  # Taxa de 0.1% por transação
-min_lucro_percentual = 0.5  # Só executa se lucro líquido > 0.5%
-valor_entrada = 6  # Mínimo para ordens de mercado na Binance
+abertas = {}
+prejuizos = 0
+ultima_pausa = 0
 
-# Moedas envolvidas
-moedas = ['USDT', 'BTC', 'ETH', 'DOGE', 'SHIB', 'SOL']
+def log(msg):
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}")
 
-def obter_saldo(moeda):
-    try:
-        balance = binance.fetch_balance()
-        return float(balance['free'].get(moeda, 0))
-    except Exception as e:
-        print(f"Erro ao obter saldo de {moeda}: {e}")
-        return 0
+def indicadores(precos):
+    closes = np.array(precos)
+    media = np.mean(closes[-20:])
+    diffs = np.diff(closes)
+    ganhos = np.maximum(diffs, 0)
+    perdas = np.maximum(-diffs, 0)
+    avg_gain = np.mean(ganhos[-14:])
+    avg_loss = np.mean(perdas[-14:])
+    rs = avg_gain / avg_loss if avg_loss != 0 else 1e10
+    rsi = 100 - (100 / (1 + rs))
+    ema12 = np.mean(closes[-12:])
+    ema26 = np.mean(closes[-26:])
+    macd = ema12 - ema26
+    signal = np.mean(closes[-9:])
+    std = np.std(closes[-20:])
+    upper = media + 2 * std
+    lower = media - 2 * std
+    return media, rsi, macd, signal, upper, lower
 
-def obter_preco(par):
-    try:
-        ticker = binance.fetch_ticker(par)
-        if not ticker or 'ask' not in ticker or 'bid' not in ticker:
-            print(f"Erro ao obter o ticker de {par}. Dados incompletos.")
-            return None
-        return ticker
-    except Exception as e:
-        print(f"Erro ao obter preço de {par}: {e}")
-        return None
+def pegar_precos(symbol, limit=50):
+    ohlcv = exchange.fetch_ohlcv(symbol, '1m', limit=limit)
+    return ohlcv, [x[4] for x in ohlcv]
 
-def gerar_triangulos(moedas):
-    triangulos = []
-    for caminho in itertools.permutations(moedas, 3):
-        if caminho[0] == 'USDT' and caminho[2] == 'USDT':
-            triangulos.append(caminho)
-    return triangulos
+def comprar(symbol, preco):
+    log(f"🟢 COMPRA {symbol} a {preco:.6f}")
+    exchange.create_market_buy_order(symbol, capital_por_ordem / preco)
+    abertas[symbol] = {'compra': preco, 'topo': preco, 'tempo': time.time()}
 
-def calcular_lucro_triangulo(caminho, capital_inicial):
-    moeda1, moeda2, moeda3 = caminho
-    par1 = f"{moeda2}/{moeda1}"  # Ex: BTC/USDT
-    par2 = f"{moeda3}/{moeda2}"  # Ex: ETH/BTC
-    par3 = f"{moeda3}/{moeda1}"  # Ex: ETH/USDT
+def vender(symbol, preco, motivo):
+    global prejuizos, ultima_pausa
+    entrada = abertas[symbol]['compra']
+    lucro = (preco - entrada) / entrada
+    log(f"🔴 VENDA {symbol} a {preco:.6f} | Motivo: {motivo} | Lucro: {lucro*100:.2f}%")
+    amount = capital_por_ordem / entrada
+    exchange.create_market_sell_order(symbol, amount)
+    if lucro < 0:
+        prejuizos += 1
+        if prejuizos >= max_prejuizos:
+            log(f"⚠️ Atingiu {max_prejuizos} prejuízos. Pausando por {pausa_em_minutos} minutos.")
+            ultima_pausa = time.time()
+    else:
+        prejuizos = 0
+    del abertas[symbol]
 
-    ticker1 = obter_preco(par1)
-    ticker2 = obter_preco(par2)
-    ticker3 = obter_preco(par3)
+def calcular_adx(ohlcv, periodo=14):
+    highs = np.array([c[2] for c in ohlcv])
+    lows = np.array([c[3] for c in ohlcv])
+    closes = np.array([c[4] for c in ohlcv])
+    plus_dm = np.where((highs[1:] - highs[:-1]) > (lows[:-1] - lows[1:]), highs[1:] - highs[:-1], 0)
+    minus_dm = np.where((lows[:-1] - lows[1:]) > (highs[1:] - highs[:-1]), lows[:-1] - lows[1:], 0)
+    tr = np.maximum(highs[1:], closes[:-1]) - np.minimum(lows[1:], closes[:-1])
+    atr = np.convolve(tr, np.ones(periodo), 'valid') / periodo
+    plus_di = 100 * (np.convolve(plus_dm, np.ones(periodo), 'valid') / atr)
+    minus_di = 100 * (np.convolve(minus_dm, np.ones(periodo), 'valid') / atr)
+    dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
+    adx = np.mean(dx[-periodo:])
+    return adx
 
-    if not ticker1 or not ticker2 or not ticker3:
-        print(f"Erro: Não foi possível obter preços para {caminho}")
-        return None, f"Erro ao obter preço de uma das ordens para {caminho}."
+def detectar_candle_verde_e_volume(ohlcv):
+    open_price, close_price = ohlcv[-1][1], ohlcv[-1][4]
+    volume = ohlcv[-1][5]
+    avg_volume = np.mean([x[5] for x in ohlcv[-21:-1]])
+    return close_price > open_price and volume > avg_volume
 
-    # Etapa 1: moeda1 → moeda2
-    quantia_moeda2 = (capital_inicial / ticker1['ask']) * (1 - taxa)
-    preco_compra1 = ticker1['ask']
-    preco_venda1 = ticker1['bid']
+def detectar_divergencia_rsi(precos):
+    precos_np = np.array(precos)
+    rsi_vals = []
+    for i in range(14, len(precos_np)):
+        diff = np.diff(precos_np[:i])
+        ganhos = np.maximum(diff, 0)
+        perdas = np.maximum(-diff, 0)
+        avg_gain = np.mean(ganhos[-14:])
+        avg_loss = np.mean(perdas[-14:])
+        rs = avg_gain / avg_loss if avg_loss != 0 else 1e10
+        rsi = 100 - (100 / (1 + rs))
+        rsi_vals.append(rsi)
+    return precos[-1] < precos[-2] and rsi_vals[-1] > rsi_vals[-2]
 
-    # Etapa 2: moeda2 → moeda3
-    quantia_moeda3 = (quantia_moeda2 / ticker2['ask']) * (1 - taxa)
-    preco_compra2 = ticker2['ask']
-    preco_venda2 = ticker2['bid']
+def backtest_rapido(ohlcv):
+    resultado = []
+    for i in range(-30, -5, 5):
+        entrada = ohlcv[i][4]
+        saida = ohlcv[i+4][4]
+        resultado.append((saida - entrada) / entrada)
+    ganhos = [r for r in resultado if r > 0]
+    return len(ganhos) >= 3
 
-    # Etapa 3: moeda3 → moeda1
-    capital_final = quantia_moeda3 * ticker3['bid'] * (1 - taxa)
-    preco_compra3 = ticker3['ask']
-    preco_venda3 = ticker3['bid']
-
-    lucro = capital_final - capital_inicial
-    lucro_percentual = (lucro / capital_inicial) * 100
-
-    # Exibindo detalhes para depuração
-    print(f"🔍 Calculando arbitragem para {caminho}")
-    print(f"    Etapa 1 ({par1}): Preço compra: {preco_compra1}, Preço venda: {preco_venda1}")
-    print(f"    Etapa 2 ({par2}): Preço compra: {preco_compra2}, Preço venda: {preco_venda2}")
-    print(f"    Etapa 3 ({par3}): Preço compra: {preco_compra3}, Preço venda: {preco_venda3}")
-    print(f"    Lucro bruto: {lucro:.4f} USDT | Lucro percentual: {lucro_percentual:.2f}%")
-
-    if lucro_percentual < min_lucro_percentual:
-        return None, f"Lucro insuficiente: {lucro_percentual:.2f}% (mínimo: {min_lucro_percentual}%)"
-
-    return {
-        'caminho': caminho,
-        'capital_final': capital_final,
-        'lucro': lucro,
-        'lucro_percentual': lucro_percentual,
-        'ordens': [par1, par2, par3],
-        'precos': [(preco_compra1, preco_venda1), (preco_compra2, preco_venda2), (preco_compra3, preco_venda3)],
-    }, None
-
-def executar_orden_triangulo(caminho, valor_usdt):
-    print("🚀 Executando arbitragem:", caminho)
-    moeda1, moeda2, moeda3 = caminho
-
-    # Ordem 1: USDT → moeda2
-    par1 = f"{moeda2}/USDT"
-    ticker1 = obter_preco(par1)
-    quantia_moeda2 = (valor_usdt / ticker1['ask']) * (1 - taxa)
-    binance.create_market_buy_order(par1, quantia_moeda2)
-
-    # Ordem 2: moeda2 → moeda3
-    par2 = f"{moeda3}/{moeda2}"
-    ticker2 = obter_preco(par2)
-    quantia_moeda3 = (quantia_moeda2 / ticker2['ask']) * (1 - taxa)
-    binance.create_market_buy_order(par2, quantia_moeda3)
-
-    # Ordem 3: moeda3 → USDT
-    par3 = f"{moeda3}/USDT"
-    ticker3 = obter_preco(par3)
-    binance.create_market_sell_order(par3, quantia_moeda3)
-
-    print("✅ Arbitragem executada com sucesso!")
-
-def verificar_todas_rotas():
-    saldo_usdt = obter_saldo('USDT')
-    if saldo_usdt < valor_entrada:
-        print(f"⚠️ Saldo insuficiente ({saldo_usdt:.2f} USDT). Esperando...\n")
+def analisar():
+    global ultima_pausa
+    if time.time() - ultima_pausa < pausa_em_minutos * 60:
+        log("⏸️ Bot em pausa por prejuízos.")
         return
 
-    triangulos = gerar_triangulos(moedas)
+    for symbol in symbol_list:
+        try:
+            ohlcv, precos = pegar_precos(symbol)
+            atual = precos[-1]
+            media, rsi, macd, signal, upper, lower = indicadores(precos)
+            log(f"🔍 {symbol} | Preço: {atual:.6f} | RSI: {rsi:.2f}")
 
-    print("🔍 Verificando rotas...\n")
-    for caminho in triangulos:
-        resultado, erro = calcular_lucro_triangulo(caminho, valor_entrada)
-        
-        if erro:
-            print(f"❌ Erro ao processar {caminho}: {erro}\n")
-        elif resultado:
-            lucro = resultado['lucro']
-            perc = resultado['lucro_percentual']
-            ordens = resultado['ordens']
-            precos = resultado['precos']
+            if symbol not in abertas:
+                entrar = False
+                if detectar_candle_verde_e_volume(ohlcv):
+                    entrar = True
+                elif rsi < rsi_gatilho:
+                    entrar = True
+                elif atual < lower and macd > signal and atual > media:
+                    entrar = True
 
-            # Log detalhado para ajudar a depurar
-            print(f"⏱ Tentando arbitragem: {caminho}")
-            for i, ordem in enumerate(ordens):
-                preco_compra, preco_venda = precos[i]
-                print(f"    {ordem} - Preço de compra: {preco_compra:.4f} | Preço de venda: {preco_venda:.4f}")
+                if entrar:
+                    confirmacoes = []
 
-            print(f"    Lucro bruto: {lucro:.4f} USDT ({perc:.2f}%)")
+                    if usar_adx:
+                        adx = calcular_adx(ohlcv)
+                        confirmacoes.append(adx > 20)
 
-            if perc >= min_lucro_percentual:
-                print(f"💰 OPORTUNIDADE: {caminho} | Lucro: {lucro:.4f} USDT ({perc:.2f}%)")
-                executar_orden_triangulo(caminho, valor_entrada)
-                return  # Espera a próxima rodada
+                    if usar_volume_candle:
+                        confirmacoes.append(detectar_candle_verde_e_volume(ohlcv))
+
+                    if usar_divergencia_rsi:
+                        confirmacoes.append(detectar_divergencia_rsi(precos))
+
+                    if usar_backtest_rapido:
+                        confirmacoes.append(backtest_rapido(ohlcv))
+
+                    if all(confirmacoes):
+                        comprar(symbol, atual)
+                    else:
+                        log(f"❌ Entrada negada por confirmações em {symbol}")
             else:
-                print(f"📉 Rota: {caminho} | Lucro insuficiente: {lucro:.4f} USDT ({perc:.2f}%)\n")
+                preco_compra = abertas[symbol]['compra']
+                topo = abertas[symbol]['topo']
+                lucro = (atual - preco_compra) / preco_compra
 
-def monitorar():
-    while True:
-        verificar_todas_rotas()
-        time.sleep(5)
+                if atual > topo:
+                    abertas[symbol]['topo'] = atual
 
-monitorar()
+                trailing_stop = abertas[symbol]['topo'] * (1 - trailing_delta)
+
+                if lucro >= take_profit:
+                    vender(symbol, atual, 'Take Profit')
+                elif lucro <= -stop_loss:
+                    vender(symbol, atual, 'Stop Loss')
+                elif atual <= trailing_stop:
+                    vender(symbol, atual, 'Trailing Stop')
+
+        except Exception as e:
+            log(f"⚠️ Erro em {symbol}: {e}")
+
+log("🤖 Alaric V6 com confirmações inteligentes iniciado...\n")
+while True:
+    analisar()
+    time.sleep(intervalo)
