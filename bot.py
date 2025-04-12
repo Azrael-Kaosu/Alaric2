@@ -2,10 +2,12 @@ import ccxt
 import time
 import datetime
 import numpy as np
-
+import os
 # === CONFIGURAÇÕES ===
-API_KEY = 'D0DiV60UucDChy9heZaDjo65Gli9s1Q4xyfEbUlAiWt718iYuqMVotlGd0GsG8Zz'
-API_SECRET = 'PtTCQXFQ9VQkJaTdIfPAA53xBV4LYdq3SaS0VzATIAT5mD6geQxk7sGjxBJYtbN3'
+
+API_KEY = os.getenv('API_KEY')
+API_SECRET = os.getenv('API_SECRET')
+
 symbol_list = ['DOGE/USDT', 'SHIB/USDT']
 capital_por_ordem = 5.5
 intervalo = 20
